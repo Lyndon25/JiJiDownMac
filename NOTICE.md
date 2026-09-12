@@ -39,7 +39,13 @@ SDK，第三方编写原生客户端是其设计之内的事。
 ## 接口定义（`.proto`）来源
 
 `Sources/JiJiProtos/` 与 `Protos-External/` 下的 `.proto` 文件来自
-**唧唧官方 SDK 的公开定义**（经第三方仓库转载获得），版权归原作者。
+**唧唧官方 SDK 的公开定义**，取自厂商自己的 GitHub 仓库
+[JiJiDown/jithon](https://github.com/JiJiDown/jithon)（唧唧 2.0 的官方 Python 客户端），
+版权归原作者。
+
+需要留意的是**这份公开 proto 比实际发布的核心旧**：jithon 最后更新停在 2023-08，
+而本机跑的核心是 2026-01 构建的 r339。字段对不上正源于此 —— 修正记录写在
+`bvideo.proto` 的注释里。
 
 这些文件在此**仅为互操作性而收录**，不受本仓库 MIT 许可证覆盖。
 

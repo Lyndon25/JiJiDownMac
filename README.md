@@ -78,13 +78,38 @@ swift build
 
 ## 已知限制
 
-都是**核心本身的行为**，客户端只能如实呈现或绕开，无法修复：
+分两类：**核心还没做完的**，和**核心行为本身的坑**。对照依据是官方路线图
+<https://client.sabe.cc/quick_start/road_map_2/> 与官方 Python 客户端
+[JiJiDown/jithon](https://github.com/JiJiDown/jithon) 的实现。
 
-- **`AllQuality` / TV / APP 接口是唧唧会员功能。** 非会员拿不到「可用清晰度枚举」，
-  只能按 B 站标准 id 直接选；选了该视频没有的档位，核心会报错，换个档位即可。
-  客户端因此提供完整档位下拉，而不是等核心枚举。
-- **`save_filename` 参数被核心无视（r339）。** 实测传 `"墨脱-1080P"` 进去，
-  产出照样是下面那个名字。
+### 一、核心还没做（官方标「施工中」）
+
+这些**不是本客户端的缺口** —— 核心就没提供，谁都调不出来：
+
+| 功能 | 核心的实际回应 |
+|---|---|
+| 番剧 / 课程 | `GetBangumiList function not allowed` |
+| up主投稿列表 | `GetUPSubmitVideoList It's a premium feature` |
+| 合集 / 列表 | `GetUpSpaceSeriesAndCollectionList It's a premium feature` |
+| 个人收藏夹 | `GetFavoriteList It's a premium feature` |
+| 可用清晰度枚举 | `AllQuality It's a premium feature` |
+| 弹幕 | 无对应 RPC；官方客户端里 `download_danmaku` 就是个 `pass` |
+| 字幕 / 互动视频 / 批量下载 / Hi-Res / 订阅 | 路线图列为施工中 |
+| **自定义存储文件名** | 路线图列为施工中 ← 见下方对 `save_filename` 的说明 |
+
+**关于那句 `It's a premium feature`：** 核心用它挡住了上面四项。
+厂商自己的 Python 客户端把这几种错误在日志里记作「无唧唧会员权限」，
+核心二进制里也确实有 `LicensePayload{Basic, Premium, Global}` 和
+`licenseClient.Update`。但**官网明确写着唧唧「终身免费提供使用」**，
+所以这里只陈述实测事实，不对「是否存在一个可购买的会员」下结论。
+
+客户端能做的只有把话说清楚：拿不到枚举就给出完整档位下拉，选错档位时报错让人换一个。
+
+### 二、核心行为的坑（客户端已绕开）
+
+- **`save_filename` 参数被核心无视。** 实测传 `"墨脱-1080P"` 进去，产出照样是
+  下面那个名字。这不是核心的 bug —— 路线图里「自定义存储文件名」标的是**施工中**，
+  也就是这个功能还没发布。客户端因此不指望它，改用完成后改名。
 - **核心生成的文件名标题是空的。** 命名模板是 `%s (%s, %s, %s, %s)`，第一个
   `%s` 是标题，而 r339 不填这个字段 → 所有同档位下载都叫
   ` (高清 1080P, HEVC, 极高音质, WEB).mp4`，**并行时会互相覆盖**。
@@ -96,8 +121,28 @@ swift build
      已经被腾空。代价是不能并行下载 —— 但比静默丢文件强。
 
   另外任务状态也有个坑：核心下完后状态**停在 `TASK_GENMUSIC(5)`，不会翻到
-  `TASK_COMPLETE(6)`**。所以完成判据是 `completeTime != 0`（`isFinished`），
+  `TASK_COMPLETE(6)`**。所以完成判据是 `completeTime > 0`（`isFinished`），
   不是看枚举。
+
+  **注意是 `> 0` 不是 `!= 0`** —— 未完成时核心给的是 `-62135596800`，
+  即 Go 零值 `time.Time`（公元 1 年）的 Unix 秒数。写成 `!= 0` 的话，
+  任务一建出来就被判成已完成。
+
+- **TV / APP 接口目前下不了。** 建任务会被接受，但取播放地址时核心报
+  `[playurl] API TV not allowed` / `API APP not allowed`，任务随即出错。
+
+  原因**尚未确证**，目前最像的解释是缺 `raw-access-token`：官方客户端的
+  Cookie 导入界面写着「AccessToken 值，**用于登录 TV、APP 接口**」，而
+  `User.ImportCookie(cookies, access_token)` 正好有这两个参数，对应配置里的
+  `raw-cookies` / `raw-access-token` —— 实测这两个在本机都是空的。
+
+  没能验证到底，是因为「已登录时核心会拒绝 ImportCookie」（`User already
+  logged in`），要试就得先登出、再导入 cookies + 一个 TV AccessToken，而
+  这个 token 从哪来我没查清。所以本项目目前**只走 WEB 接口**（`api_type: 0` 写死）。
+
+  官方客户端在这点上给用户的提示是：「WEB接口仅支持WEB接口下载，TV接口支持全接口下载」，
+  且 TV 接口能下部分 UP 主的**无水印**内容 —— 所以这条路打通是有价值的，
+  只是我还没打通。
 - **`video_codec = UNKNOWN(0)` 会让核心 panic**（`index out of range [0] with length 0`，
   在 `JDMTask.NewSession`）。协议层已硬性拦截，默认编码是 HEVC。
 - **核心自带的 `-stop-with-process <PID>` 是坏的。** 那个参数看上去正是用来

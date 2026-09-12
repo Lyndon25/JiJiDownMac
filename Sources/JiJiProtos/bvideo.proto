@@ -37,7 +37,8 @@ message BvideoCheckContentReply {
 //
 // ⚠️ 本消息的字段 3 已被**按实测结果修正**，与上游公开的那份 proto 不同。
 //
-// 上游公开 proto（来自已归档的 jithon 仓库）把字段 3 声明为
+// 上游公开 proto（来自厂商自己的 JiJiDown/jithon 仓库，最后更新 2023-08，
+// 比本机跑的 r339 核心旧了三年）把字段 3 声明为
 // `string video_title`、把视频块放在字段 14。但实测核心 git.r339 返回的
 // 字节流在字段 3 处放的是**嵌套消息**，当成字符串解会直接报
 // "String field had bad UTF-8"，整个 Info 调用失败：
