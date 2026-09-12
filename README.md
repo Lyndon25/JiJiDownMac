@@ -100,6 +100,11 @@ swift build
   不是看枚举。
 - **`video_codec = UNKNOWN(0)` 会让核心 panic**（`index out of range [0] with length 0`，
   在 `JDMTask.NewSession`）。协议层已硬性拦截，默认编码是 HEVC。
+- **核心自带的 `-stop-with-process <PID>` 是坏的。** 那个参数看上去正是用来
+  防止核心变成孤儿的，可惜实测（r339）无效 —— 盯着父进程被 `kill -9`，它纹丝
+  不动（隔离验证等满 90 秒）。所以本项目不用它，改成启动前自己收尸：
+  `CoreManager.reapStaleCore()` 会找出占用端口、**且可执行文件正是我们安装的
+  那份**的残留进程，先 SIGTERM 再 SIGKILL。判据卡两道，不会误伤别的东西。
 - **控制器端口零鉴权。** 任何能连上 4000 端口的进程都能读任务列表、导入 Cookie、
   删本地文件。客户端只连 `127.0.0.1`，绝不监听 `0.0.0.0`。
 - `125`（HDR）与 `30250`（全景声）是否可用**取决于视频本身**，不是所有视频都有。
@@ -117,6 +122,20 @@ Scripts/
 ├── bundle.sh       手工组装 .app
 └── smoke-core.sh   核心二进制冒烟测试
 ```
+
+### 公开 proto 与实际线上格式不一致（已按实测修正）
+
+上游公开的 `.proto` 与 r339 核心**对不上**，照原样编译会解析失败或读出空值。
+`Sources/JiJiProtos/bvideo.proto` 里按实测改了两处，原因都写在文件内注释里：
+
+| 字段 | 上游 proto 说 | 实测实际是 |
+|---|---|---|
+| `BvideoInfoReply` 字段 3 | `string video_title` | `repeated BvideoBlock`（视频块）|
+| `BvideoInfoReply` 字段 2 | `bytes video_cover` | 嵌套消息 `BvideoMeta`，封面只是它的子字段 |
+
+第二处不修的表现很直观：封面、UP 主、简介全是空的 —— 因为把一整段嵌套消息
+当图片字节喂给了 `NSImage`。字段编号是靠抓原始 wire 字节、再用两个视频比对
+确认的（`meta` 的 8 号子字段在两个视频里取值相同，所以那是 UP 主 mid，不是播放量）。
 
 ### 两个容易踩的坑（都已处理，改代码时别踩回去）
 

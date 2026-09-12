@@ -54,28 +54,47 @@ message BvideoCheckContentReply {
 message BvideoInfoReply {
   // B站 URL 检测结果
   BLinkResult blink_result = 1;
-  // 视频封面
-  bytes video_cover = 2;
+  // 视频元信息
+  //
+  // 修正：上游 proto 把字段 2 标成 `bytes video_cover`，实测那里是一个
+  // **嵌套消息** —— 封面只是它的一号子字段。照上游当 bytes 读，拿到的是
+  // 整段嵌套消息的字节，喂给图片解码器必然失败。界面上的表现就是：
+  // 封面一片空白、UP 主和简介全是空的。
+  BvideoMeta meta = 2;
   // 视频列表块（修正：上游 proto 误标为 string video_title）
   repeated BvideoBlock block = 3;
-  // 视频文件名
-  string video_filename = 4;
-  // 描述
-  string video_desc = 5;
-  // 视频子类型
-  string sub_sort = 6;
-  // 视频类型
-  string sort = 7;
+  // 备注：上游 proto 在这个消息里还定义了 video_filename(4)、video_desc(5)、
+  // sub_sort(6)、sort(7)、up_name(9)、up_mid(10)、up_face(11)、
+  // bili_pubdate_str(12)、is_stein_gate(13)。实测 r339 的顶层响应**只有
+  // 字段 1、2、3**，这些一个都不发 —— 内容现在都在 `meta` 里。这里不再保留，
+  // 免得读到永远为空的字段还以为是自己用错了。
+}
+
+// 视频元信息（`BvideoInfoReply.meta`）。
+//
+// 字段编号与含义均为实测所得：对两个不同视频（BV1SSQLBREVV、BV1t93W6CEh2）
+// 抓原始 wire 字节逐一比对确认。
+//   - 1 与 9 都是 JPEG（头 ffd8ffe0）
+//   - 8 在两个视频里取值完全相同（3816626）→ 是 UP 主的 mid，不是播放量
+message BvideoMeta {
+  // 视频封面（JPEG）
+  bytes cover = 1;
+  // 视频标题
+  string title = 2;
+  // 实测与 title 内容完全相同的第二个标题字段，语义未确证
+  string title_alt = 3;
+  // 视频简介
+  string desc = 4;
+  // 分区，如「其他」
+  string category = 5;
   // UP主昵称
-  string up_name = 9;
-  // UP主 ID
-  int64 up_mid = 10;
-  // UP主头像
-  bytes up_face = 11;
-  // B站发布时间 番剧的字符串时间
-  string bili_pubdate_str = 12;
-  // 是否为互动视频
-  bool is_stein_gate = 13;
+  string up_name = 7;
+  // UP主 mid
+  int64 up_mid = 8;
+  // UP主头像（JPEG）
+  bytes up_face = 9;
+  // 发布时间，形如 "2026-04-16 12:00:00"
+  string pub_date = 10;
 }
 
 message BvideoBlock {

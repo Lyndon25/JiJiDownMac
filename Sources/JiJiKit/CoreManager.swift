@@ -92,6 +92,7 @@ public final class CoreManager {
         }
 
         phase = .starting
+        reapStaleCore()
         do {
             try launch()
         } catch {
@@ -291,6 +292,96 @@ public final class CoreManager {
             appendLog("[manager] 产物改名失败：\(coreName)（文件不在或已存在同名）")
         }
         return url
+    }
+
+    // MARK: - 收尸
+
+    /// 清掉占着端口的残留核心，给即将启动的进程腾位置。
+    ///
+    /// **为什么非要有这一步。** 核心是独立进程，App 被强退（`kill -9`）或崩溃时
+    /// `applicationWillTerminate` 根本不会跑，它就一直占着 4000 端口 ——
+    /// 下次启动直接失败，而核心只会报一句 `External controller gRPC listen error`，
+    /// 对用户来说毫无线索。
+    ///
+    /// 核心自带一个 `-stop-with-process <PID>` 看起来正是干这个的，可惜实测
+    /// （r339）**无效**：即便被盯的进程是它的父进程、且被 `kill -9`，核心照样
+    /// 纹丝不动（手工隔离验证过，等了 90 秒也没退）。所以只能自己动手。
+    ///
+    /// 判据卡两道：**既要在监听我们的端口，可执行文件又必须正是我们安装的那份**。
+    /// 两个都对上才动手 —— 避免误伤用户自己起的别的东西。
+    private func reapStaleCore() {
+        let port = UInt16(CoreProtocol.defaultPort)
+        guard Self.isPortOpen(port: port) else { return }
+
+        guard let pid = Self.pidListening(on: port) else {
+            appendLog("[manager] 端口 \(port) 被占用，但查不出占用者是谁")
+            return
+        }
+        guard Self.executablePath(ofPID: pid) == Self.installedBinary.path else {
+            appendLog("[manager] 端口 \(port) 被 PID \(pid) 占用，但它不是本客户端安装的核心，不动它")
+            return
+        }
+
+        appendLog("[manager] 发现残留的核心进程 PID \(pid)（上次没退干净），先收掉它")
+        kill(pid, SIGTERM)
+        for _ in 0..<20 {
+            if !Self.isAlive(pid) { break }
+            usleep(250_000)
+        }
+        if Self.isAlive(pid) {
+            appendLog("[manager] PID \(pid) 不响应 SIGTERM，改用 SIGKILL")
+            kill(pid, SIGKILL)
+            usleep(500_000)
+        }
+        appendLog("[manager] 端口 \(port) 已腾空")
+    }
+
+    private static func isAlive(_ pid: pid_t) -> Bool {
+        kill(pid, 0) == 0
+    }
+
+    /// 谁在监听这个端口。`lsof -ti` 只输出 PID，一行一个。
+    private static func pidListening(on port: UInt16) -> pid_t? {
+        let out = run("/usr/sbin/lsof", ["-nP", "-ti", "tcp:\(port)", "-sTCP:LISTEN"])
+        for line in out.split(whereSeparator: \.isNewline) {
+            if let pid = pid_t(line.trimmingCharacters(in: .whitespaces)) { return pid }
+        }
+        return nil
+    }
+
+    /// 进程的可执行文件路径。
+    ///
+    /// `lsof -Fn` 的行是「字段标识 + 值」：`p<pid>`、`fcwd`、`n<路径>`…
+    /// 要找的是 `ftxt` 后面紧跟的那条 `n`。
+    private static func executablePath(ofPID pid: pid_t) -> String? {
+        let out = run("/usr/sbin/lsof", ["-p", "\(pid)", "-Fn"])
+        var expectingText = false
+        for line in out.split(whereSeparator: \.isNewline) {
+            if line == "ftxt" { expectingText = true; continue }
+            if line.hasPrefix("f") { expectingText = false; continue }
+            if expectingText, line.hasPrefix("n") {
+                return String(line.dropFirst())
+            }
+        }
+        return nil
+    }
+
+    /// 跑个外部命令把 stdout 收回来。查端口占用这点事儿不值得引 libproc。
+    private static func run(_ tool: String, _ args: [String]) -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: tool)
+        p.arguments = args
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        do {
+            try p.run()
+        } catch {
+            return ""
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
     // MARK: - 进程
