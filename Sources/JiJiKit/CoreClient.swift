@@ -51,38 +51,117 @@ public enum CoreError: Error, CustomStringConvertible {
     case coreNotRunning
     /// 未登录（FAILED_PRECONDITION + "User no login"）。
     case notLoggedIn
-    /// 核心拒绝了这个功能：实测是 license 模块的 Premium 授权门
-    /// （`license.(*license).GetVideoList` / `.DownloadVideo`）。
-    case functionNotAllowed(String)
+    /// 核心说已经登录了（再调 LoginQRCode / ImportCookie 就会被它顶回来）。
+    case alreadyLoggedIn
+    /// 同一个视频、同样的参数已经有任务了。
+    case taskExists
+    /// 授权门：核心用 `GetVideoList / DownloadVideo function not allowed` 拦人。
+    ///
+    /// 登录前必现，登录后一般就通了 —— 核心需要拿登录换来的 access_token
+    /// 去换授权，换到了才放行这两个接口。**所以这条出现时未必是「没登录」**，
+    /// 已登录还这样的话，是授权没换到。
+    case needsAuthorization(String)
+    /// 核心用 `It's a premium feature` 挡住的功能。
+    ///
+    /// 实测被它挡住的四个：`AllQuality`、`GetUpSpaceSeriesAndCollectionList`、
+    /// `GetUPSubmitVideoList`、`GetFavoriteList`。厂商自己的客户端把这类
+    /// 在日志里记作「无唧唧会员权限」。
+    case premiumFeature(String)
+    /// 核心明说 `function not allowed`，且**不是**那两个授权门接口 ——
+    /// 目前实测只有番剧（`GetBangumiList`）会这样，是没做，不是没权限。
+    case notSupported(String)
     case rpc(code: String, message: String)
 
     public var description: String {
         switch self {
         case .coreNotRunning: "核心未运行"
         case .notLoggedIn: "未登录 B 站账号"
-        case .functionNotAllowed(let f): "核心拒绝该功能（需唧唧授权）：\(f)"
+        case .alreadyLoggedIn: "核心说已经登录了"
+        case .taskExists: "这个视频已经有同样的任务了"
+        case .needsAuthorization(let m): "核心的授权门没放行（\(m)）"
+        case .premiumFeature(let m): "核心尚未开放该功能（\(m)）"
+        case .notSupported(let m): "核心不支持该功能（\(m)）"
         case .rpc(let code, let message): "\(code): \(message)"
         }
     }
 
-    /// 从 `RPCError` 归类。核心用 gRPC 状态码 + message 表达语义。
+    /// 给用户看的下一步建议。
+    ///
+    /// 比 `description` 长，只在界面上用。分开写是因为**光有一句错误码
+    /// 帮不到用户**，而「去登录」这种建议如果在已登录时报出来，就是在骗人。
+    public var guidance: String {
+        switch self {
+        case .coreNotRunning:
+            "去「核心」页看看它为什么没起来。"
+        case .notLoggedIn:
+            """
+            去「账号」页登录 B 站账号。
+
+            核心拒绝的 GetVideoList / DownloadVideo 这两个接口，要拿到登录换来的 \
+            access_token 才放行。
+            """
+        case .alreadyLoggedIn:
+            "不用再登了，直接用就行。"
+        case .taskExists:
+            "去「任务」页看看，或者先把它删掉再重新提交。"
+        case .needsAuthorization:
+            """
+            核心拦下了这个接口。它需要登录换来的 access_token 去换授权。
+
+            如果你**还没登录**，去「账号」页登录即可。
+            如果**已经登录了还这样**，说明授权没换到 —— 重新登录一次，
+            或者去「核心」页看一眼日志里 [license] 那几行。
+            """
+        case .premiumFeature:
+            """
+            这个功能目前在核心那边调不动。官方路线图里，这类多半还标着「施工中」：
+            番剧下载、字幕、收藏夹、up主投稿、互动视频、弹幕、批量下载、
+            Hi-Res、订阅。
+
+            换成单个视频的 BV 号就能下。
+            """
+        case .notSupported:
+            "核心明确表示不做这个（比如番剧）。换普通视频的 BV 号来下。"
+        case .rpc(let code, let message):
+            "\(code): \(message)"
+        }
+    }
+
+    /// 从 `RPCError` 归类。
+    ///
+    /// 判据是**对着活核心实测出来的**，不是照 proto 猜的。核心用
+    /// gRPC 状态码 + message 文本表达语义，几类错误的状态码还互相重叠，
+    /// 所以只能靠 message 分辨，且顺序有讲究。
     static func from(_ error: any Error) -> CoreError {
         guard let rpc = error as? RPCError else {
             return .rpc(code: "LOCAL", message: String(describing: error))
         }
         let message = rpc.message
-        switch rpc.code {
-        case .unavailable:
-            return .coreNotRunning
-        case .failedPrecondition where message.contains("no login"):
-            return .notLoggedIn
-        case .aborted where message.contains("function not allowed"):
-            return .functionNotAllowed(message)
-        case .permissionDenied where message.contains("function not allowed"):
-            return .functionNotAllowed(message)
-        default:
-            return .rpc(code: String(describing: rpc.code), message: message)
+
+        // 先按 message 分辨 —— 这几类的状态码会撞车，靠码分不出来。
+        if message.contains("premium feature") {
+            return .premiumFeature(message)
         }
+        if message.contains("already logged in") {
+            return .alreadyLoggedIn
+        }
+        if message.contains("task already exists") {
+            return .taskExists
+        }
+        if rpc.code == .unavailable {
+            return .coreNotRunning
+        }
+        if message.contains("no login") {
+            return .notLoggedIn
+        }
+        if message.contains("function not allowed") {
+            // 同一个说法罩着两种完全不同的情况，必须按函数名分开：
+            // GetVideoList / DownloadVideo 是授权门（登录能解），
+            // 其余的（实测只有 GetBangumiList）是压根没做。
+            let isAuthGate = message.contains("GetVideoList") || message.contains("DownloadVideo")
+            return isAuthGate ? .needsAuthorization(message) : .notSupported(message)
+        }
+        return .rpc(code: String(describing: rpc.code), message: message)
     }
 }
 

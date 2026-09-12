@@ -5,11 +5,14 @@ import JiJiProtos
 /// ## 为什么是硬编码的一串常量
 ///
 /// 核心本该有 `Bvideo.AllQuality` 用来枚举某个视频真正可用的清晰度，但
-/// **那个接口是唧唧会员付费功能**：
+/// **那个接口目前调不动**：
 ///
 ///     Bvideo.AllQuality → ABORTED: AllQuality It's a premium feature
 ///
-/// 所以非会员客户端只能按标准 id 去试。好消息是「试错」很安全：只要
+/// （厂商自己的客户端把这条在日志里记作「无唧唧会员权限」；官网又写着唧唧
+/// 终身免费，所以这里只说实测现象，不替它解释成什么付费墙。）
+///
+/// 于是客户端只能按标准 id 去试。好消息是「试错」很安全：只要
 /// `video_codec` 是合法值，清晰度不存在时核心只会干净地报
 /// `expected video quality 'X', got 'Y'`，不会崩。
 ///
@@ -77,12 +80,17 @@ public enum AudioQuality: UInt32, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// 下载接口。实测 **TV 与 APP 都是会员功能**：
+/// 下载接口。实测 **目前只有 WEB 能用**：
 ///
 ///     [playurl] API TV not allowed
 ///     [playurl] API APP not allowed
 ///
-/// 所以非会员只能用 WEB。
+/// 注意这两句不是「没权限」的口吻，而是「没开放」。建任务时核心会照收，
+/// 到取播放地址那一步才报错、任务随即失败。
+///
+/// 最像的原因是缺 `raw-access-token`（官方客户端的 Cookie 导入界面写着
+/// 「AccessToken 用于登录 TV、APP 接口」，而本机配到的是空的）—— 但没验到底，
+/// 详见 README 的「已知限制」。
 public enum DownloadAPI: UInt32, CaseIterable, Identifiable, Sendable {
     case web = 0
     case tv = 1

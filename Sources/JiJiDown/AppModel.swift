@@ -393,19 +393,8 @@ final class AppModel {
                 qualities = try? await client.allQuality(bvid: page.pageBv, cid: page.pageCid)
             }
         } catch let error as CoreError {
-            // 最可能撞上的就是授权门 —— 把话说明白，别让用户以为是自己填错了。
-            if case .functionNotAllowed = error {
-                parseError = """
-                    核心拒绝了这个功能。
-
-                    核心的 license 模块把 GetVideoList / DownloadVideo 放在授权门后面。\
-                    未登录时核心拿不到 access_token，也就换不到授权。
-
-                    去「账号」页登录 B 站账号再试。
-                    """
-            } else {
-                parseError = error.description
-            }
+            // 只说一句错误码帮不到用户，所以正文 + `guidance` 的建议一起给。
+            parseError = "\(error.description)\n\n\(error.guidance)"
         } catch {
             parseError = String(describing: error)
         }
@@ -434,12 +423,15 @@ final class AppModel {
             unclaimedTitles.append(parsedVideo?.displayTitle ?? "")
             await refreshTasks()
             tab = .tasks
+        } catch let error as CoreError {
+            parseError = "建任务失败：\(error.description)\n\n\(error.guidance)"
         } catch {
             parseError = """
                 建任务失败：\(error)
 
-                常见原因：这个视频没有你选的清晰度或音质。核心的 AllQuality \
-                枚举接口是唧唧会员功能，非会员只能按标准 id 试 —— 换一个档位再试。
+                最常见的原因是**这个视频没有你选的清晰度或音质** —— 核心的
+                AllQuality 枚举接口调不动（见「已知限制」），所以档位只能自己试，
+                选了个该视频没有的档位就会这样。换一个档位再试。
                 """
         }
     }

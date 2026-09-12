@@ -209,14 +209,15 @@ private struct QualitySummary: View {
 
 /// 清晰度枚举拿不到时的说明。
 ///
-/// `Bvideo.AllQuality` 是唧唧会员功能，非会员一定失败 —— 与其让用户以为
+/// `Bvideo.AllQuality` 目前调不动（返回 `It's a premium feature`）——
+/// 与其让用户以为
 /// 是自己网络出了问题，不如把原因讲清楚。
 private struct QualityUnavailableNote: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "info.circle").foregroundStyle(.secondary)
             Text("""
-                拿不到清晰度列表 —— 核心的 `AllQuality` 接口是唧唧会员功能。\
+                拿不到清晰度列表 —— 核心的 `AllQuality` 接口现在返回 `It's a premium feature`。\
                 下面按 B 站标准清晰度直接选；选了该视频没有的档位，核心会报错，\
                 换个档位即可。
                 """)
@@ -287,8 +288,8 @@ private struct DownloadOptions: View {
                 Image(systemName: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange)
                 Text("""
-                    杜比视界需要配合 HEVC 编码。TV / APP 接口是会员功能，\
-                    非会员请用 WEB。
+                    杜比视界需要配合 HEVC 编码。目前只有 WEB 接口能用\
+                    （TV / APP 取播放地址时核心会报 not allowed）。
                     """)
                     .font(.caption).foregroundStyle(.secondary)
             }
