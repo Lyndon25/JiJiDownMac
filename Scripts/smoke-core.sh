@@ -1,54 +1,119 @@
 #!/usr/bin/env bash
 #
-# 核心二进制冒烟测试：校验 → 配置 → 启动 → 确认监听 4000 → 收尾。
+# 核心二进制冒烟测试：校验 → 安装 → 起进程 → 确认真的在监听 → 收掉。
 #
-# 在写任何 Swift 代码之前先跑这个，确认 JiJiDownCore 在本机真的能起来。
-# 这一步排除了 Gatekeeper、架构不匹配、配置格式错误等一整类问题。
+# 用来在没有 App 的情况下确认「这个二进制在这台机器上跑得起来」，
+# 比如换架构、换核心版本之后先验一下。
 #
-set -uo pipefail
+# ## 为什么这个脚本一定要备份配置
+#
+# 核心**不按当前工作目录找 config.yaml**，它认死了一个固定路径
+# `~/.config/JiJiDown/config.yaml`（实测：cwd 换到别处，它照样去读 home 下那份）。
+# 所以想控制它跑在哪个端口，就只能改那个文件 —— 没别的办法。
+#
+# 而那个文件里存着用户登录后的 access-token 和 cookies。一脚踩空就是
+# 「跑一次冒烟测试把人踢下线」。所以这里开跑前先原样备份，跑完无条件还原
+# （trap EXIT，中途报错也还原）。
+#
+# 用法：
+#   ./Scripts/smoke-core.sh
+#   JJD_PORT=4100 ./Scripts/smoke-core.sh
+#
+set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="$ROOT/Vendor/JiJiDownCore-darwin-arm64"
-HASHES="$ROOT/Vendor/JiJiDownCore-hash.txt"
+VENDOR="$ROOT/Vendor"
+RUNDIR="$ROOT/.run/smoke"
+PORT="${JJD_PORT:-4100}"
+DL_DIR="${JJD_DOWNLOAD_DIR:-$HOME/Downloads/JiJiDown}"
+
 CFG_DIR="$HOME/.config/JiJiDown"
 CFG="$CFG_DIR/config.yaml"
-RUNDIR="$ROOT/.run"
+BACKUP="$RUNDIR/config.yaml.orig"
+
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64)  TARGET=darwin-arm64 ;;
+  Darwin-x86_64) TARGET=darwin-amd64 ;;
+  Linux-aarch64) TARGET=linux-arm64 ;;
+  Linux-x86_64)  TARGET=linux-amd64 ;;
+  *) echo "不认识的目标平台：$(uname -s)-$(uname -m)" >&2; exit 1 ;;
+esac
+
+SRC="$VENDOR/JiJiDownCore-$TARGET"
+HASHES="$VENDOR/JiJiDownCore-hash.txt"
+BIN="$RUNDIR/JiJiDownCore"
 LOG="$RUNDIR/core.log"
-DL_DIR="${JJD_DOWNLOAD_DIR:-$HOME/Downloads/JiJiDown}"
+
+if [[ ! -f "$SRC" ]]; then
+  echo "找不到 $SRC" >&2
+  echo "先跑：./Scripts/fetch-core.sh" >&2
+  exit 1
+fi
+
+# App 正跑着的时候别动 —— 它托管着同一个核心和同一份配置，抢起来两边都不好看。
+if lsof -nP -iTCP:4000 -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "有个核心正跑在 4000 上（可能是 App 托管的）。" >&2
+  echo "先退出 App，或者：JJD_PORT=4100 $0" >&2
+  exit 1
+fi
 
 mkdir -p "$RUNDIR" "$CFG_DIR" "$DL_DIR"
 
-# ── 1. 校验 sha256 ────────────────────────────────────────────────
-echo "==> [1/5] 校验 sha256"
-# 注意：官方 hash 文件是 CRLF 换行，必须先去掉 \r，否则行尾锚点匹配不上、取到空值。
-EXPECTED="$(tr -d '\r' < "$HASHES" | grep 'JiJiDownCore-darwin-arm64$' | cut -d'|' -f1)"
-ACTUAL="$(shasum -a 256 "$SRC" | cut -d' ' -f1)"
-echo "    期望 $EXPECTED"
-echo "    实际 $ACTUAL"
-if [[ "$EXPECTED" != "$ACTUAL" ]]; then
-  echo "    ✗ 校验失败，二进制可能损坏或被篡改，中止" >&2
-  exit 1
+CORE_PID=""
+restore_config() {
+  kill "$CORE_PID" 2>/dev/null || true
+  if [[ -f "$BACKUP" ]]; then
+    cp "$BACKUP" "$CFG"
+    rm -f "$BACKUP"
+    echo "==> 原配置已还原（登录凭据没丢）"
+  else
+    rm -f "$CFG"
+    echo "==> 本来就没有配置，已清掉测试写的那份"
+  fi
+}
+trap restore_config EXIT
+
+# ── 1. 校验 sha256 并备份配置 ────────────────────────────────────
+echo "==> [1/4] 校验 sha256"
+if [[ ! -f "$HASHES" ]]; then
+  echo "    没有 ${HASHES}，跳过校验（建议先跑 fetch-core.sh）" >&2
+else
+  # 清单是 CRLF 换行，格式 SHA256|version|filename。
+  EXPECT="$(tr -d '\r' < "$HASHES" | awk -F'|' -v f="JiJiDownCore-$TARGET" '$3 == f { print $1; exit }')"
+  ACTUAL="$(shasum -a 256 "$SRC" | awk '{print $1}')"
+  if [[ -z "$EXPECT" ]]; then
+    echo "    清单里没有 JiJiDownCore-$TARGET" >&2; exit 1
+  fi
+  if [[ "$EXPECT" != "$ACTUAL" ]]; then
+    echo "    ✗ 校验失败" >&2
+    echo "      期望 $EXPECT" >&2
+    echo "      实际 $ACTUAL" >&2
+    exit 1
+  fi
+  echo "    ✓ 校验通过（${EXPECT:0:16}…）"
 fi
-echo "    ✓ 校验通过"
 
-# ── 2. 架构与可执行权限 ───────────────────────────────────────────
-echo "==> [2/5] 架构检查"
-file "$SRC" | sed 's/^/    /'
-install -m 0755 "$SRC" "$CFG_DIR/JiJiDownCore"
-echo "    ✓ 已安装到 $CFG_DIR/JiJiDownCore"
+if [[ -f "$CFG" ]]; then
+  cp "$CFG" "$BACKUP"
+  echo "    已备份现有配置 → 测试结束会还原"
+fi
 
-# ── 3. 写最小配置 ─────────────────────────────────────────────────
-echo "==> [3/5] 写配置 $CFG"
-# grpc-web 设 0 关掉 —— 我们不需要浏览器端，少开一个端口少一分暴露。
-# 三个端口都无鉴权，绝不能监听 0.0.0.0。
-# 必须写全字段：核心对缺失字段不做兜底，例如 session-workers 缺省会取 0
-# 而它要求 1-3，直接 FATA 退出。空字符串要显式写成 ""，否则 YAML 解析成 null。
+# ── 2. 安装 ──────────────────────────────────────────────────────
+echo "==> [2/4] 安装到 $RUNDIR"
+install -m 0755 "$SRC" "$BIN"
+echo "    ✓ 架构：$(file -b "$BIN" | cut -c1-60)"
+
+# ── 3. 写配置并启动 ──────────────────────────────────────────────
+echo "==> [3/4] 启动（端口 ${PORT}）"
+# 核心对缺失字段**不做兜底**：例如 session-workers 缺省会取 0，而它要求 1-3，
+# 结果是启动时直接 FATA 退出。所以每个字段都要写全，空串要显式写成 ""。
+# grpc-web / restful 设 0 关掉 —— 冒烟测试不需要它们，少开一个端口少一分暴露。
 cat > "$CFG" <<YAML
 log-level: info
 external-controller-port:
-    grpc: 4000
+    grpc: $PORT
     grpc-web: 0
-    restful-api: 64001
+    restful-api: 0
 user-info:
     access-token: ""
     refresh-token: ""
@@ -60,7 +125,7 @@ download-task:
     temp-dir: ""
     download-dir: "$DL_DIR"
     ffmpeg-path: ""
-    max-task: 2
+    max-task: 1
     download-speed-limit: 0
     disable-mcdn: false
 jdm:
@@ -76,14 +141,11 @@ jdm:
     insecure-skip-verify: false
     custom-root-certificates: ""
 YAML
-sed 's/^/    | /' "$CFG"
 
-# ── 4. 启动并等待监听 ─────────────────────────────────────────────
-echo "==> [4/5] 启动核心"
 : > "$LOG"
-"$CFG_DIR/JiJiDownCore" >"$LOG" 2>&1 &
+"$BIN" >"$LOG" 2>&1 &
 CORE_PID=$!
-echo "    pid=${CORE_PID}, 日志 $LOG"
+echo "    pid=${CORE_PID}，日志 $LOG"
 
 LISTENING=0
 for i in $(seq 1 30); do
@@ -92,28 +154,24 @@ for i in $(seq 1 30); do
     sed 's/^/      /' "$LOG" >&2
     exit 1
   fi
-  if lsof -nP -iTCP:4000 -sTCP:LISTEN >/dev/null 2>&1; then
+  if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     LISTENING=1
-    echo "    ✓ 4000 端口已监听（等了 ${i} 秒）"
+    echo "    ✓ $PORT 已监听（等了 ${i} 秒）"
     break
   fi
   sleep 1
 done
 
 if [[ "$LISTENING" != "1" ]]; then
-  echo "    ✗ 30 秒内没监听 4000，日志：" >&2
+  echo "    ✗ 30 秒内没监听 ${PORT}，日志：" >&2
   sed 's/^/      /' "$LOG" >&2
-  kill "$CORE_PID" 2>/dev/null
   exit 1
 fi
 
-echo "    监听详情："
-lsof -nP -iTCP:4000 -sTCP:LISTEN | sed 's/^/      /'
-echo "    启动日志："
-sed 's/^/      /' "$LOG" | head -20
+sed 's/^/      /' "$LOG" | head -12
 
-# ── 5. 收尾 ──────────────────────────────────────────────────────
-echo "==> [5/5] 停止核心"
-kill "$CORE_PID" 2>/dev/null
-wait "$CORE_PID" 2>/dev/null
-echo "    ✓ 冒烟测试通过"
+# ── 4. 收尾 ──────────────────────────────────────────────────────
+echo "==> [4/4] 停止核心"
+kill "$CORE_PID" 2>/dev/null || true
+wait "$CORE_PID" 2>/dev/null || true
+CORE_PID=""

@@ -84,7 +84,7 @@ if [[ "$ACTUAL" != "$EXPECT" ]]; then
 fi
 
 chmod +x "$VENDOR/$FILE"
-echo "==> ✅ 完成：Vendor/$FILE（sha256 已核对）"
+echo "==> ✅ 完成：Vendor/${FILE}（sha256 已核对）"
 echo
 echo "下一步："
 echo "    swift build && ./Scripts/bundle.sh"
