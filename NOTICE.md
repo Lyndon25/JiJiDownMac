@@ -1,5 +1,17 @@
 # 声明与第三方归属
 
+## 许可证的覆盖范围
+
+仓库根目录的 [LICENSE](LICENSE) 是**未经改动的 MIT 正文**（这样 GitHub 才认得出
+它是 MIT）。但 MIT **只覆盖本项目作者编写的源代码**，不覆盖：
+
+1. **JiJiDownCore** —— 唧唧官方提供的闭源预编译二进制。版权归唧唧作者所有，
+   本仓库不分发它，仅由 `Scripts/fetch-core.sh` 从官方地址获取。
+2. **`Sources/JiJiProtos/` 与 `Protos-External/` 下的 `.proto` 接口定义** ——
+   来自唧唧官方 SDK，为互操作性而收录，版权归原作者。
+3. **第三方 Swift 依赖**（grpc-swift、swift-protobuf、SwiftNIO 等）——
+   各自遵循其自身许可证，见下方表格。
+
 ## 本项目与唧唧（JiJiDown）的关系
 
 **本项目是非官方第三方客户端，与唧唧官方没有任何隶属或合作关系。**

@@ -19,18 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-────────────────────────────────────────────────────────────────────────
-
-本许可证仅覆盖本仓库中由本项目作者编写的源代码。
-
-它不覆盖：
-
-  1. JiJiDownCore —— 唧唧官方提供的闭源预编译二进制。版权归唧唧作者所有，
-     本仓库不分发它，仅由 Scripts/fetch-core.sh 从官方地址获取。
-  2. Sources/JiJiProtos/ 与 Protos-External/ 下的 .proto 接口定义 ——
-     来自唧唧官方 SDK，为互操作性而收录，版权归原作者。
-  3. 第三方 Swift 依赖（grpc-swift、swift-protobuf、SwiftNIO 等）——
-     各自遵循其自身许可证。
-
-详见 NOTICE.md。
