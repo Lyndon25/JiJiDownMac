@@ -1,0 +1,23 @@
+# ── 构建产物 ──────────────────────────────────────────────
+.build/
+dist/
+*.o
+*.dSYM/
+
+# ── 开发期临时环境（不属于项目本体）──────────────────────
+.venv/
+.tools/
+.run/
+PROCESS-ARTIFACTS.md
+
+# ── 闭源厂商二进制 ────────────────────────────────────────
+# JiJiDownCore 是唧唧官方的闭源预编译二进制，版权归其作者，
+# 不随本仓库分发。用 Scripts/fetch-core.sh 从官方地址获取。
+Vendor/JiJiDownCore-darwin-*
+Vendor/JiJiDownCore-linux-*
+Vendor/JiJiDownCore-win*
+# 官方发布的校验清单可以留（它只是哈希，不含二进制）
+!Vendor/JiJiDownCore-hash.txt
+
+# ── macOS ────────────────────────────────────────────────
+.DS_Store
