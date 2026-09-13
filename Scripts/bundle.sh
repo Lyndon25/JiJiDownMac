@@ -22,11 +22,46 @@ VERSION="0.1.0"
 EXEC_PATH="$ROOT/.build/$CONFIG/$EXEC_NAME"
 APP_DIR="$ROOT/dist/$APP_NAME.app"
 
+# 提示里的构建命令必须按 CONFIG 分叉写死。
+# 不能用 ${CONFIG/release/-c release} 这种字符串替换去拼：CONFIG=debug 时替换不命中，
+# 会打印出 "swift build debug"，而这条命令实测直接报错（error: Unexpected argument 'debug'）。
+# 另外本机没有 Xcode，默认构建引擎会全量重编依赖并失败，所以提示里必须点名 --build-system native，
+# 否则照着提示跑照样起不来。
+case "$CONFIG" in
+  debug)   BUILD_CMD="swift build --build-system native" ;;
+  release) BUILD_CMD="swift build --build-system native -c release" ;;
+  *)       BUILD_CMD="swift build --build-system native -c $CONFIG" ;;
+esac
+
 if [[ ! -x "$EXEC_PATH" ]]; then
   echo "找不到可执行文件：$EXEC_PATH" >&2
-  echo "先跑：swift build ${CONFIG/release/-c release}" >&2
+  echo "先跑：$BUILD_CMD" >&2
   exit 1
 fi
+
+# 打包来源必须在拷贝前摊开，否则存在「静默打包另一棵树」的风险：
+# .build/<config> 是个符号链接，指向哪棵树取决于「最后一次跑的是哪个构建引擎」——
+# 默认引擎指向 .build/out/Products/<Config>（可能是很久以前的产物），
+# native 引擎指向 arm64-apple-macosx/<config>。链接一旦停在默认引擎那一侧，
+# 本脚本仍会照常退出 0 并打印完成，但打进 app 的是陈旧二进制。
+EXEC_DIR_REAL="$(cd "$(dirname "$EXEC_PATH")" && pwd -P)"
+EXEC_REAL="$EXEC_DIR_REAL/$(basename "$EXEC_PATH")"
+MARKER_FILE="$ROOT/.build/.buildSystem_$CONFIG"
+MARKER="$(cat "$MARKER_FILE" 2>/dev/null || echo '（该标记不存在）')"
+EXEC_SHA="$(shasum -a 256 "$EXEC_REAL" | awk '{print $1}')"
+
+echo "==> 打包来源"
+echo "    符号链接：$EXEC_PATH"
+echo "    真实路径：$EXEC_REAL"
+echo "    引擎标记：$MARKER_FILE = $MARKER"
+echo "    sha256：$EXEC_SHA"
+echo "    大小/时间：$(stat -f '%z 字节  %Sm' -t '%Y-%m-%d %H:%M:%S' "$EXEC_REAL")"
+if [[ "$MARKER" != "native" ]]; then
+  echo "    警告：引擎标记不是 native，上面这份多半来自另一棵树（.build/out/Products/），可能是陈旧产物" >&2
+fi
+
+# 这里只做「让来源可见」，刻意不做基于 mtime 的新鲜度校验：
+# 实测这套构建系统按内容哈希判定，源文件 mtime 晚于二进制 40 秒仍算「当前」，用 mtime 会误报。
 
 echo "==> 组装 $APP_DIR"
 rm -rf "$APP_DIR"
