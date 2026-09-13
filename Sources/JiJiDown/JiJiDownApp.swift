@@ -35,7 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
-            model?.shutdown()
+            // 传 true：这条路径上 AppKit 马上就会退进程，gRPC 那边做不了优雅关闭。
+            model?.shutdown(terminating: true)
         }
     }
 
