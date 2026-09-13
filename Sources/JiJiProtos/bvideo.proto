@@ -118,8 +118,14 @@ message BvideoPage {
   bytes page_cover = 5;
   // page 标题
   string page_title = 6;
-  // page 信息 (发布时间)
-  repeated string page_info = 7;
+  // page 发布时间
+  //
+  // 修正：上游 proto 把字段 7 标成 `repeated string page_info`，实测核心
+  // git.r339 在那里发的是**单个**发布时间字符串。两者 wire type 都是
+  // length-delimited，所以按 repeated 解不会报错 —— 只是每次都会得到一个
+  // 只有一项的数组，语义被悄悄带偏（真按「信息列表」去用就会写错代码）。
+  // 这里按实测的语义改回 string。
+  string page_publish_time = 7;
   // 视频时长（修正：实测核心在字段 8 单独发时长文本，如 "47:44"，
   // 上游 proto 漏了这个字段，于是被当未知字段丢弃）
   string page_duration = 8;

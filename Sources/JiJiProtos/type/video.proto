@@ -16,3 +16,17 @@ enum VideoType {
   // AV1 编码
   VideoType_AV1 = 3;
 }
+
+// 内容来源类型（`TaskNewReq.source`）。
+//
+// 来源：读核心 Vendor/JiJiDownCore-darwin-arm64（git.r339）**内嵌的
+// FileDescriptorProto** 得到，上游公开的那份 proto 里没有这个枚举。
+// 取值与顺序照描述符原样抄录，不自行增删 —— 枚举值是按序号上线传给核心的。
+enum SourceType {
+  // 普通投稿视频 (av / BV)
+  NORMAL = 0;
+  // 番剧
+  BANGUMI = 1;
+  // 课程
+  CHEESE = 2;
+}

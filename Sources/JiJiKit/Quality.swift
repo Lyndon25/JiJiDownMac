@@ -50,13 +50,11 @@ public enum VideoQuality: UInt32, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// 杜比视界只在 HEVC 下存在。
+    /// 杜比视界只在 HEVC 下存在。用户选了它却没配 HEVC 时界面给一句提示
+    /// （见 `ParseView`）。**这里不做任何自动纠正**：不降级、不改编码 ——
+    /// 实测核心遇到拿不到的清晰度只干净地报错，用户自己看得见，悄悄替他改
+    /// 反而会让下到的东西和界面上显示的对不上。
     public var requiresHEVC: Bool { self == .dolbyVision }
-
-    /// 从高到低的常用降级顺序，用于「按优先级尝试」。
-    public static let fallbackLadder: [VideoQuality] = [
-        .dolbyVision, .q4K, .p1080_60, .p1080Plus, .p1080, .p720, .p480, .p360,
-    ]
 }
 
 /// B 站音频音质 id。

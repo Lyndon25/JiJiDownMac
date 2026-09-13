@@ -53,8 +53,14 @@ extension Jijidown_Core_BvideoPage {
     /// 发布日期。
     ///
     /// 上游 proto 把字段 7 声明为 `repeated string page_info`，实测核心在那里
-    /// 发的是发布日期文本；时长在字段 8，上游漏了，已补进 proto。
+    /// 发的是**单个**发布日期文本（不是列表）；时长在字段 8，上游漏了，已补进
+    /// proto。
+    ///
+    /// 这里跟着 proto 改成 `pagePublishTime` 直接取，不再 `.first`：字段类型
+    /// 对了之后，取第一项这个动作本身就是语义错误的来源 —— 它会把「这是一条
+    /// 发布日期」读成「这是一串不知道是什么的信息，先拿第一条凑合」，将来核心
+    /// 若真在字段 7 追加第二条，读到的也是错的值。
     public var publishDate: String {
-        pageInfo.first ?? ""
+        pagePublishTime
     }
 }

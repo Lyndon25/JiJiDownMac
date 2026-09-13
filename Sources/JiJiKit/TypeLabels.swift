@@ -15,6 +15,22 @@ extension Jijidown_Core_ApiType {
     }
 }
 
+/// 检查更新状态的中文名。
+///
+/// 和 `TaskStatusType.label` 同理必须处理 `UNRECOGNIZED`：核心比公开的 proto 新，
+/// 未知枚举值直接 switch 穷举会崩。
+extension Jijidown_Core_UpdateStatusType {
+    public var label: String {
+        switch self {
+        case .checking: "检查中 / 下载更新"
+        case .notsupportupdate: "不支持自动更新"
+        case .uptodate: "已是最新版本"
+        case .needupdate: "需要更新"
+        case .UNRECOGNIZED(let n): "未知(\(n))"
+        }
+    }
+}
+
 extension Jijidown_Core_VideoType {
     public var label: String {
         switch self {

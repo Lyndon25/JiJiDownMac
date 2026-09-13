@@ -28,6 +28,28 @@ service Task {
 }
 
 // 创建新任务-请求
+//
+// ⚠️ 字段 8~11 已**按实测结果修正**，与上游公开的那份 proto 不同。
+//
+// 这份字段表来自两条互相独立的证据：
+//   1. 用自写的 FileDescriptorProto 解码器读核心
+//      `Vendor/JiJiDownCore-darwin-arm64`（git.r339）**内嵌的描述符**，
+//      其中 TaskNewReq 的字段 8 是 `source(SourceType)`；
+//   2. 对活核心做行为验证（见下）。
+//
+// 上游公开 proto（厂商自己的 JiJiDown/jithon 仓库）漏掉了 `source`，
+// 于是字段 8 被标成 save_filename、后面整体错位一位。照它发请求的后果：
+//   - `save_filename`、`audio_only` 落在核心不认识的位置上，wire type 也对
+//     不上（.proto 里是 string/bool，核心在 8 处期待枚举、9 处期待 string），
+//     被核心当作未知字段**静默丢弃** —— 传了也没用，还没有任何报错。
+//   - `callback` 是 uint64、核心字段 10 是 bool audio_only，两者 wire type
+//     都是 varint，于是**能被解出来**：callback 一旦非 0，就被核心当成
+//     「仅下载音频」。
+//
+// 错位的行为证据：把字段 10 置非零 → 核心只拉音频流（产物名形如
+// `-1-30216.m4s`），最终产出 253,067 字节的 mp3，且 TaskStatusReply.audio_only
+// 翻成 true，任务 id 与请求参数一一对应；字段 10 为 0 → 正常拉视频+音频流
+// 并合流出 mp4。这说明核心确实把字段 10 当 audio_only 在读。
 message TaskNewReq {
   // aid
   int64 aid = 1;
@@ -43,12 +65,14 @@ message TaskNewReq {
   VideoType video_codec = 6;
   // 下载使用的 API (WEB / TV / APP)
   ApiType api_type = 7;
+  // 内容来源 (普通投稿 / 番剧 / 课程)（上游 proto 漏了这个字段，导致其后全部错位）
+  SourceType source = 8;
   // 保存文件名
-  string save_filename = 8;
+  string save_filename = 9;
   // 仅下载音频
-  bool audio_only = 9;
+  bool audio_only = 10;
   // 批量下载回调
-  uint64 callback = 10;
+  uint64 callback = 11;
 }
 
 // 任务创建状态

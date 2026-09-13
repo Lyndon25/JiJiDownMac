@@ -55,11 +55,12 @@ public enum CoreError: Error, CustomStringConvertible {
     case alreadyLoggedIn
     /// 同一个视频、同样的参数已经有任务了。
     case taskExists
-    /// 授权门：核心用 `GetVideoList / DownloadVideo function not allowed` 拦人。
+    /// 授权门：核心用 `<函数名> function not allowed` 拦人，且函数名在
+    /// `authorizationGateFunctions` 名单里。
     ///
-    /// 登录前必现，登录后一般就通了 —— 核心需要拿登录换来的 access_token
-    /// 去换授权，换到了才放行这两个接口。**所以这条出现时未必是「没登录」**，
-    /// 已登录还这样的话，是授权没换到。
+    /// 实测名单：`GetVideoList`、`DownloadVideo`、`DownloadBatch`。登录前必现，
+    /// 登录后一般就通了 —— 核心需要拿登录换来的 access_token 去换授权，换到了
+    /// 才放行。**所以这条出现时未必是「没登录」**，已登录还这样的话，是授权没换到。
     case needsAuthorization(String)
     /// 核心用 `It's a premium feature` 挡住的功能。
     ///
@@ -67,7 +68,7 @@ public enum CoreError: Error, CustomStringConvertible {
     /// `GetUPSubmitVideoList`、`GetFavoriteList`。厂商自己的客户端把这类
     /// 在日志里记作「无唧唧会员权限」。
     case premiumFeature(String)
-    /// 核心明说 `function not allowed`，且**不是**那两个授权门接口 ——
+    /// 核心明说 `function not allowed`，但函数名**不在**上面那张授权门名单里 ——
     /// 目前实测只有番剧（`GetBangumiList`）会这样，是没做，不是没权限。
     case notSupported(String)
     case rpc(code: String, message: String)
@@ -127,6 +128,20 @@ public enum CoreError: Error, CustomStringConvertible {
         }
     }
 
+    /// 会被 `CoreError` 当成**授权门**的函数名（`<名字> function not allowed`）。
+    ///
+    /// 名单只收**实测过的**。`DownloadBatch` 是实测的（`failedPrecondition:
+    /// DownloadBatch function not allowed`，与登录前的 `DownloadVideo` 同形），
+    /// 所以归进这一支 —— 界面对它会说「回账号页看看」，而不是「核心明确表示
+    /// 不做这个」。
+    ///
+    /// 同族应该还有 `DownloadAudio` / `DownloadBangumi` / `DownloadDanmaku`
+    /// （官方路线图上那几个「施工中」的下载功能），但**没实测过**，所以不写进来：
+    /// 判据宁可窄一点，也不能把「核心没做」说成「去登录」。
+    private static let authorizationGateFunctions = [
+        "GetVideoList", "DownloadVideo", "DownloadBatch",
+    ]
+
     /// 从 `RPCError` 归类。
     ///
     /// 判据是**对着活核心实测出来的**，不是照 proto 猜的。核心用
@@ -156,12 +171,114 @@ public enum CoreError: Error, CustomStringConvertible {
         }
         if message.contains("function not allowed") {
             // 同一个说法罩着两种完全不同的情况，必须按函数名分开：
-            // GetVideoList / DownloadVideo 是授权门（登录能解），
-            // 其余的（实测只有 GetBangumiList）是压根没做。
-            let isAuthGate = message.contains("GetVideoList") || message.contains("DownloadVideo")
+            // 名单里的是授权门（登录换的 access_token 能解锁），
+            // 其余（实测只有 GetBangumiList）是压根没做。
+            let isAuthGate = Self.authorizationGateFunctions.contains { message.contains($0) }
             return isAuthGate ? .needsAuthorization(message) : .notSupported(message)
         }
         return .rpc(code: String(describing: rpc.code), message: message)
+    }
+}
+
+/// 建一条任务要的一整组参数。
+///
+/// 存在的理由：`Task.New` 与 `Task.NewBatch` 的请求体是同一个 `TaskNewReq`，
+/// 每个调用点各拼一遍字段迟早会拼岔（此前 proto 错位一位，正是所有调用点
+/// 一起错）。所以字段只在 `CoreClient.makeNewReq` 里落一次，两个接口共用。
+public struct TaskParams: Sendable {
+    public var aid: Int64 = 0
+    public var bvid: String = ""
+    public var cid: Int64 = 0
+
+    /// 清晰度 id，**原样**发给核心，不经过 `VideoQuality` 校验。
+    ///
+    /// 用枚举构造时自然是合法档位；要试「枚举里没有的 id」就走下面那个
+    /// 原样 init。**别用 `VideoQuality(rawValue:) ?? .p1080` 兜底** ——
+    /// 那会把越界值悄悄改写成 1080P，实验条件被改掉还不知道
+    /// （上一轮实测正是因此白跑了一遍 1080P）。
+    public var videoQuality: UInt32 = VideoQuality.p1080.rawValue
+
+    /// 音质 id，同上，原样发给核心。
+    public var audioQuality: UInt32 = AudioQuality.q192K.rawValue
+
+    public var codec: Jijidown_Core_VideoType = .hevc
+    public var api: DownloadAPI = .web
+
+    /// 核心命名模板的**主干名**（`TaskNewReq.save_filename`，字段 9）。
+    ///
+    /// 实测语义（r339）：它填进核心命名模板的第一个 `%s`，也就是标题位，
+    /// 产出 `<save_filename> (清晰度角标, 编码, 音质角标, 接口).<扩展名>`。
+    /// 传空串时那一位就是空的，于是文件名以一个空格开头。
+    ///
+    /// 三个坑：
+    /// - 扩展名由核心决定（视频永远 `.mp4`，仅音频永远 `.mp3`），带进去也没用：
+    ///   传 `"标题.mp4"` 出来是 `"标题.mp4 (…).mp4"`，双扩展名。
+    /// - 里面带 `/` 会让 ffmpeg 失败、任务转 `TASK_ERROR` 且**不产出文件**，
+    ///   提交前必须过滤路径分隔符（`OutputNaming.sanitized` 就是干这个的）。
+    /// - **不要指望它防覆盖**：核心遇到同名文件是**静默覆盖**的（不加 `(2)`、
+    ///   不报错）。「绝不覆盖」只能由客户端保证，而且是**提交之前**保证
+    ///   （`OutputNaming.availableStem` 拿目录里的现有文件名避让）——
+    ///   等下载完再改名兜底就晚了，那时文件已经被盖掉了。
+    public var saveFilename: String = ""
+
+    /// 只下音频（`audio_only`，字段 10）。
+    ///
+    /// 实测：产物是 mp3（本次样本 253,067 字节，没有视频轨），并且
+    /// `TaskStatusReply.audio_only` 会回显 true —— 这是个可用的判据。
+    public var audioOnly: Bool = false
+
+    /// 批量下载回调号（字段 11）。单条 `Task.New` 用不到它
+    /// （`TaskNewBatchReply` 里只有 callback 和 err，没有任务 id），
+    /// 留着是为了能复现那段历史观测。
+    public var callback: UInt64 = 0
+
+    public init(
+        aid: Int64 = 0,
+        bvid: String = "",
+        cid: Int64 = 0,
+        quality: VideoQuality = .p1080,
+        audio: AudioQuality = .q192K,
+        codec: Jijidown_Core_VideoType = .hevc,
+        api: DownloadAPI = .web,
+        saveFilename: String = "",
+        audioOnly: Bool = false,
+        callback: UInt64 = 0
+    ) {
+        self.aid = aid
+        self.bvid = bvid
+        self.cid = cid
+        self.videoQuality = quality.rawValue
+        self.audioQuality = audio.rawValue
+        self.codec = codec
+        self.api = api
+        self.saveFilename = saveFilename
+        self.audioOnly = audioOnly
+        self.callback = callback
+    }
+
+    /// 清晰度 / 音质按 **id 原样**给的版本，供实测与「枚举里没有的档位」用。
+    public init(
+        aid: Int64 = 0,
+        bvid: String = "",
+        cid: Int64 = 0,
+        videoQuality: UInt32,
+        audioQuality: UInt32,
+        codec: Jijidown_Core_VideoType = .hevc,
+        api: DownloadAPI = .web,
+        saveFilename: String = "",
+        audioOnly: Bool = false,
+        callback: UInt64 = 0
+    ) {
+        self.aid = aid
+        self.bvid = bvid
+        self.cid = cid
+        self.videoQuality = videoQuality
+        self.audioQuality = audioQuality
+        self.codec = codec
+        self.api = api
+        self.saveFilename = saveFilename
+        self.audioOnly = audioOnly
+        self.callback = callback
     }
 }
 
@@ -227,6 +344,36 @@ public actor CoreClient {
         }
     }
 
+    /// 检查更新（服务端流）。
+    ///
+    /// 三件必须先知道的事：
+    ///
+    /// 1. 这是**核心启动时那次检查的回放，不是重新联网**。实测每次调用只回 1 条
+    ///    （本机 status=1 NOTSUPPORTUPDATE + 195 字 changelog），反复调内容一模一样。
+    /// 2. 尽管实测只有 1 条，它**仍然可能推多条**：`UpdateStatusType.CHECKING(0)`
+    ///    本身就是「检查中 / 下载更新」两个含义合一，所以调用方得自己按 `status`
+    ///    判断这条是进度还是结论，不能假定流里只有一条。
+    /// 3. 我们**只读 `status` / `changeLog`，不做任何安装动作**（用户已经定了：
+    ///    只提示，不下载不安装）。
+    ///
+    /// - Parameter timeout: 到点主动断流，默认 20 秒。加这道保险是因为
+    ///   **核心关不关流是它的自由** —— 它要是不关，调用方的 `for try await`
+    ///   会一直挂着，界面就永远停在「检查中」。到点按**正常结束**收尾，不抛错：
+    ///   已经收到的回复仍然有效，核心没关流这件事不该被说成检查失败。
+    public nonisolated func checkUpdate(
+        timeout: Duration = .seconds(20)
+    ) -> AsyncThrowingStream<Jijidown_Core_StatusCheckUpdateReply, any Error> {
+        stream(timeout: timeout) { client, continuation in
+            try await client.status.checkUpdate(
+                request: ClientRequest(message: SwiftProtobuf.Google_Protobuf_Empty())
+            ) { response in
+                for try await message in response.messages {
+                    continuation.yield(message)
+                }
+            }
+        }
+    }
+
     // MARK: User
 
     public func userInfo() async throws -> Jijidown_Core_UserInfoReply {
@@ -277,8 +424,18 @@ public actor CoreClient {
     /// 核心要求 Cookie 串里至少含这几个字段（它自己会校验）：
     /// `DedeUserID`、`DedeUserID__ckMd5`、`SESSDATA`、`bili_jct`、`sid`、`buvid3`。
     ///
-    /// - Note: 这是**用户的登录凭据**。只在明确知情同意下使用，不要落盘、不要外发。
-    public func importCookie(cookies: String, accessToken: String = "") async throws {
+    /// - Parameters:
+    ///   - cookies: 上面那串 Cookie。**这是用户的登录凭据**，只在明确知情同意下
+    ///     使用，不要落盘、不要外发。
+    ///   - accessToken: 官方客户端的 Cookie 导入界面写着它「用于登录 TV、APP 接口」。
+    ///     **本项目未验证**：本机配到的是空的，而 TV / APP 接口目前一律在取播放
+    ///     地址那一步失败（`API TV not allowed` / `API APP not allowed`）——
+    ///     有 token 会不会通，没验过，别把它当成已证实的解法。
+    ///
+    ///     这里**故意不给默认值**（仓库里 `listTasks` 也是同样的理由）：
+    ///     调用方要么明确传空串表示「没有」，要么真有一个 token ——
+    ///     不该让它悄悄留空，回头以为传过了。
+    public func importCookie(cookies: String, accessToken: String) async throws {
         let client = self.users
         var req = Jijidown_Core_UserImportCookieReq()
         req.cookies = cookies
@@ -290,7 +447,14 @@ public actor CoreClient {
         }
     }
 
-    /// 任务完成推送（服务端流）。
+    /// 任务完成推送（服务端流）。**目前 0 调用点。**
+    ///
+    /// App 走的是每 2 秒轮询 `Task.List`（见 `AppModel.refreshTasks`），没接这条
+    /// 推送流 —— 这条流**实际能不能用没有验过**，所以留着的是「接口在这儿」这个
+    /// 事实，而不是「它能用」的承诺。README 的「客户端没接」那一栏也是这个口径。
+    ///
+    /// 将来要接，先想清楚它和轮询的关系：轮询同时也在做别的事（认领新任务、
+    /// 定位产物），换掉轮询不是删掉一个循环那么简单。
     public nonisolated func notifications() -> AsyncThrowingStream<
         Jijidown_Core_TaskNotificationReply, any Error
     > {
@@ -352,7 +516,7 @@ public actor CoreClient {
 
     // MARK: Task
 
-    /// 建下载任务。
+    /// 建下载任务（单条，走 `Task.New`）。
     ///
     /// - Parameters:
     ///   - quality: 清晰度。默认 1080P。杜比视界传 `.dolbyVision`（实测可行，
@@ -363,6 +527,10 @@ public actor CoreClient {
     ///   - codec: 编码。**默认 HEVC，绝不能传 `.unknown`** —— 核心按编码过滤，
     ///     UNKNOWN 匹配不到任何流，拿到空列表后在 `jdm.NewSession` 里
     ///     `index out of range` **直接 panic 退出整个核心**（实测）。
+    ///   - saveFilename: 命名模板的**主干名**，见 `TaskParams.saveFilename`
+    ///     （核心会自己在后面补角标与扩展名）。
+    ///   - audioOnly: 只下音频，产物是 mp3，见 `TaskParams.audioOnly`。
+    ///   - callback: 批量下载回调号，单条任务用不到，默认 0。
     public func newTask(
         aid: Int64 = 0,
         bvid: String = "",
@@ -372,38 +540,53 @@ public actor CoreClient {
         codec: Jijidown_Core_VideoType = .hevc,
         api: DownloadAPI = .web,
         saveFilename: String = "",
-        audioOnly: Bool = false
+        audioOnly: Bool = false,
+        callback: UInt64 = 0
     ) async throws {
-        // 兜一道：把「会崩核心」的取值挡在客户端，别指望服务端会拒绝。
-        guard codec != .unknown else {
-            throw CoreError.rpc(code: "INVALID_ARGUMENT", message: "video_codec 不能是 UNKNOWN，会导致核心崩溃")
-        }
+        try await newTask(
+            TaskParams(
+                aid: aid,
+                bvid: bvid,
+                cid: cid,
+                quality: quality,
+                audio: audio,
+                codec: codec,
+                api: api,
+                saveFilename: saveFilename,
+                audioOnly: audioOnly,
+                callback: callback
+            )
+        )
+    }
 
+    /// 建下载任务，参数整组给定（清晰度 / 音质可以是不在枚举里的 id）。
+    public func newTask(_ params: TaskParams) async throws {
         let client = self.tasks
-        var req = Jijidown_Core_TaskNewReq()
-        req.aid = aid
-        req.bvid = bvid
-        req.cid = cid
-        req.videoQuality = quality.rawValue
-        req.audioQuality = audio.rawValue
-        req.videoCodec = codec
-        req.apiType = Jijidown_Core_ApiType(rawValue: Int(api.rawValue)) ?? .web
-        req.saveFilename = saveFilename
-        req.audioOnly = audioOnly
         do {
-            _ = try await client.new(request: unary(req))
+            _ = try await client.new(request: unary(makeNewReq(params)))
         } catch {
             throw CoreError.from(error)
         }
     }
 
-    /// 批量建任务。返回每个子任务的创建结果（含失败原因）。
-    public func newTasks(_ requests: [Jijidown_Core_TaskNewReq]) async throws
-        -> Jijidown_Core_TaskNewBatchReply
-    {
+    /// 批量建任务（走 `Task.NewBatch`）。
+    ///
+    /// ⚠️ **目前这条路走不通，客户端不要依赖它。** 实测核心用授权门把它挡死了：
+    ///
+    ///     failedPrecondition: DownloadBatch function not allowed
+    ///
+    /// 与登录前的 `DownloadVideo function not allowed` 同形，所以 `CoreError.from`
+    /// 把它归到 `.needsAuthorization`（界面会说「回账号页看看」，而不是
+    /// 「核心明确表示不做这个」）。**批量下载的实现方式是逐条 `Task.New`**
+    /// （多选分P → 逐条提交），不是这个接口。
+    ///
+    /// 返回的 `TaskNewBatchReply` 里**没有任务 id**，每条 `TaskCreationStatus`
+    /// 只有 `callback` 和 `err` 两个字段 —— 就算它哪天放行了，调用方也只能靠
+    /// 自己塞进去的 callback 配对。留着这个方法的理由就是随时能复验那道门。
+    public func newTasks(_ params: [TaskParams]) async throws -> Jijidown_Core_TaskNewBatchReply {
         let client = self.tasks
         var req = Jijidown_Core_TaskNewBatchReq()
-        req.newTasks = requests
+        req.newTasks = try params.map(makeNewReq)
         do {
             return try await client.newBatch(request: unary(req))
         } catch {
@@ -411,13 +594,47 @@ public actor CoreClient {
         }
     }
 
+    /// 把友好参数落成 `TaskNewReq`。
+    ///
+    /// **字段号只在这个函数里出现一次** —— `Task.New` 与 `Task.NewBatch` 共用它。
+    private func makeNewReq(_ params: TaskParams) throws -> Jijidown_Core_TaskNewReq {
+        // 兜一道：把「会崩核心」的取值挡在客户端，别指望服务端会拒绝。
+        guard params.codec != .unknown else {
+            throw CoreError.rpc(code: "INVALID_ARGUMENT", message: "video_codec 不能是 UNKNOWN，会导致核心崩溃")
+        }
+
+        var req = Jijidown_Core_TaskNewReq()
+        req.aid = params.aid
+        req.bvid = params.bvid
+        req.cid = params.cid
+        req.videoQuality = params.videoQuality
+        req.audioQuality = params.audioQuality
+        req.videoCodec = params.codec
+        req.apiType = Jijidown_Core_ApiType(rawValue: Int(params.api.rawValue)) ?? .web
+        // 显式写 .normal（普通投稿）。上游 proto 漏掉这个字段时，后面全部错位一位
+        // —— 所以宁可明写，也不靠 proto 的默认值把话省掉。
+        req.source = .normal
+        req.saveFilename = params.saveFilename
+        req.audioOnly = params.audioOnly
+        req.callback = params.callback
+        return req
+    }
+
     /// 按状态列出任务。
     ///
-    /// 注意一个真实的歧义：厂商仓库里 `TaskStatusType` 有**两份互相冲突的定义**，
-    /// 遗留那份把 0 命名为 `TASK_ALL`，生效那份（我们编译的）把 0 命名为
-    /// `taskError`。所以「列出全部」到底怎么表达，proto 层面给不出答案 ——
-    /// 传 0 是「全部」还是「仅错误」需要对着活的核心实测。
-    /// 因此这里不做默认值，强迫调用方显式选择。
+    /// ⚠️ **过滤值 0 是「不过滤」，不是「只出错的任务」。**
+    ///
+    /// 这里有个真实的歧义：厂商仓库里 `TaskStatusType` 有**两份互相冲突的定义**，
+    /// 遗留那份把 0 命名为 `TASK_ALL`，我们编译的这份把 0 命名为 `taskError`。
+    /// 实测（r339）站遗留那份 —— **传 0 拿回来的是全部任务**，各种状态的都在
+    /// 里面。也就是说同一个常量 0 在两个位置上含义完全不同：
+    /// 当**过滤条件**是「全部」，当**任务自己的 `taskStatus`** 是「出错」。
+    ///
+    /// `.taskError` 这个名字读起来一点也不像「全部」，所以这里不给默认值，
+    /// 强迫调用方显式选择；要「全部」请直接用 `listAllTasks()`。
+    ///
+    /// 另记一笔：枚举值 6（`taskComplete`）在实测中**从未出现过** ——
+    /// 任务下完后状态停在 5。判完成请用 `TaskStatusReply.isFinished`。
     public func listTasks(status: Jijidown_Core_TaskStatusType) async throws
         -> [Jijidown_Core_TaskStatusReply]
     {
@@ -429,6 +646,15 @@ public actor CoreClient {
         } catch {
             throw CoreError.from(error)
         }
+    }
+
+    /// 列出**全部**任务（不论状态）。
+    ///
+    /// 内部就是 `Task.List` 传 0（0 = 不过滤，见 `listTasks` 的说明）。
+    /// 单独开一个入口，是为了别让调用方为了表达「全部」去写 `.taskError` ——
+    /// 那个名字放在过滤位置上，读的人会以为是「只列出错的任务」。
+    public func listAllTasks() async throws -> [Jijidown_Core_TaskStatusReply] {
+        try await listTasks(status: .taskError)
     }
 
     /// 单个任务的当前状态。
@@ -462,7 +688,11 @@ public actor CoreClient {
 extension CoreClient {
     /// 把「尾随闭包 + response.messages」式的 server-streaming 调用，
     /// 桥接成 `AsyncThrowingStream`，让 UI 层可以直接 `for try await`。
+    ///
+    /// - Parameter timeout: 非 nil 时到点主动断流。只有核心**可能不关流**的调用
+    ///   才需要它（见 `checkUpdate`）：其余几条流是核心自己会收尾的。
     fileprivate nonisolated func stream<Message: Sendable>(
+        timeout: Duration? = nil,
         _ body: @escaping @Sendable (
             _ client: CoreClient,
             _ continuation: AsyncThrowingStream<Message, any Error>.Continuation
@@ -470,11 +700,28 @@ extension CoreClient {
     ) -> AsyncThrowingStream<Message, any Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
-                do {
-                    try await body(self, continuation)
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: CoreError.from(error))
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        do {
+                            try await body(self, continuation)
+                            continuation.finish()
+                        } catch {
+                            // 超时那条已经把流收尾了，这里再补一个取消错误只会
+                            // 把「正常超时」说成「流被中断」。
+                            if Task.isCancelled { return }
+                            continuation.finish(throwing: CoreError.from(error))
+                        }
+                    }
+                    if let timeout {
+                        group.addTask {
+                            try? await Task.sleep(for: timeout)
+                            continuation.finish()
+                        }
+                    }
+                    // 谁先结束都算数：先结束的那个已经把流收尾，另一个取消掉。
+                    // `finish()` 是幂等的，重复调用没有副作用。
+                    await group.next()
+                    group.cancelAll()
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
